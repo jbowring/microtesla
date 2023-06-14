@@ -53,3 +53,25 @@ if response.status_code != 200:
 response_json = response.json()
 with open('cache.json', 'w') as file:
     json.dump(response_json, file)
+
+response = requests.get(
+    f'{BASE_URL}api/1/vehicles',
+    headers={'Authorization': 'Bearer ' + response_json['access_token']},
+)
+if response.status_code != 200:
+    print('Got code', response.status_code, 'from', response.request.url)
+    exit()
+
+vehicle_list = response.json()['response']
+
+response = requests.get(
+    f'{BASE_URL}api/1/vehicles/{vehicle_list[0]["id"]}/vehicle_data',
+    headers={'Authorization': 'Bearer ' + response_json['access_token']},
+)
+if response.status_code != 200:
+    print('Got code', response.status_code, 'from', response.request.url)
+    exit()
+
+battery_level = response.json()['response']['charge_state']['battery_level']
+
+print('Battery level:', battery_level)
