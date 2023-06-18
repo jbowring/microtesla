@@ -11,5 +11,5 @@ tesla = microtesla.MicroTesla()
 vehicle = tesla.get_vehicle_list()[0]
 
 print(vehicle)
-print(tesla.get_vehicle_data(vehicle['id']))
+print(tesla.get_vehicle_data(vehicle['id_s']))
 

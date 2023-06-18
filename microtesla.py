@@ -1,5 +1,5 @@
-import base64
-import hashlib
+import ubinascii
+import uhashlib
 import json
 import os
 import sys
@@ -22,11 +22,10 @@ class VehicleUnavailable(MicroTeslaException):
 
 
 def urlsafe_b64encode(source):
-    return base64.b64encode(source).replace(b'+', b'-').replace(b'/', b'_')
+    return ubinascii.b2a_base64(source).rstrip().replace(b'+', b'-').replace(b'/', b'_')
 
-def query_string(params):
+def generate_query_string(params):
     return '&'.join(f'{key}={value}' for key, value in params.items())
-
 
 class TeslaAuth:
     def __init__(self, cache_file):
@@ -57,7 +56,7 @@ class TeslaAuth:
                 "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
             }
 
-            response = urequests.post(SSO_BASE_URL + TOKEN_URL, data=query_string(post_params), headers=headers)
+            response = urequests.post(SSO_BASE_URL + TOKEN_URL, data=generate_query_string(post_params), headers=headers)
             if response.status_code != 200:
                 print('Got code', response.status_code, 'from', response.request.url)
                 if try_again:
@@ -66,7 +65,7 @@ class TeslaAuth:
                     return
                 else:
                     raise MicroTeslaException('failed')  # TODO
-
+            
             response_json = response.json()
             if response_json['refresh_token'] != self.__refresh_token:
                 with open('cache.json', 'w') as file:
@@ -77,7 +76,7 @@ class TeslaAuth:
 
     def __get_refresh_token(self):
         code_verifier = urlsafe_b64encode(os.urandom(32)).rstrip(b'=')
-        unencoded_digest = hashlib.sha256(code_verifier).digest()
+        unencoded_digest = uhashlib.sha256(code_verifier).digest()
         code_challenge = urlsafe_b64encode(unencoded_digest).rstrip(b'=')
 
         auth_request_fields = {
@@ -88,8 +87,8 @@ class TeslaAuth:
             'code_challenge': code_challenge.decode(),
             'code_challenge_method': 'S256',
         }
-
-        print('Open this URL:', SSO_BASE_URL + CODE_URL + '?' + query_string(auth_request_fields))
+        
+        print('Open this URL:', SSO_BASE_URL + CODE_URL + '?' + generate_query_string(auth_request_fields))
         
         query_string = input('Enter URL after authentication: ').split('?', 1)[1]
         code = dict(substring.split('=') for substring in query_string.split('&'))['code']
@@ -107,7 +106,7 @@ class TeslaAuth:
             "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
         }
 
-        response = urequests.post(SSO_BASE_URL + TOKEN_URL, data=query_string(post_params), headers=headers)
+        response = urequests.post(SSO_BASE_URL + TOKEN_URL, data=generate_query_string(post_params), headers=headers)
         if response.status_code != 200:
             print('Got code', response.status_code, 'from', SSO_BASE_URL + TOKEN_URL)
             print(response.text)
@@ -123,10 +122,10 @@ class TeslaAuth:
         self.__access_token = response_json['access_token']
 
     def get(self, url, try_again=True):
-        response = urequests.get(url, headers={'Authorization': 'Bearer ' + self.__access_token, 'Connection': 'close'})
+        response = urequests.get(url, headers={'Authorization': f'Bearer {self.__access_token}', 'Connection': 'close'})
 
         if response.status_code == 408:
-            raise VehicleUnavailable
+            raise VehicleUnavailable('Vehicle unavailable')
         elif response.status_code >= 300:
             print('Got code', response.status_code, 'from', url)
             if try_again:
