@@ -65,7 +65,7 @@ class TeslaAuth:
                     return
                 else:
                     raise MicroTeslaException('failed')  # TODO
-            
+
             response_json = response.json()
             if response_json['refresh_token'] != self.__refresh_token:
                 with open('cache.json', 'w') as file:
@@ -87,9 +87,9 @@ class TeslaAuth:
             'code_challenge': code_challenge.decode(),
             'code_challenge_method': 'S256',
         }
-        
+
         print('Open this URL:', SSO_BASE_URL + CODE_URL + '?' + generate_query_string(auth_request_fields))
-        
+
         query_string = input('Enter URL after authentication: ').split('?', 1)[1]
         code = dict(substring.split('=') for substring in query_string.split('&'))['code']
 
@@ -126,8 +126,8 @@ class TeslaAuth:
         response_text = response.text
 
         if response.status_code == 408:
-            raise VehicleUnavailable('Vehicle is offline with error {response.json()["error"]}')
-        elif response.status_code >= 300:
+            raise VehicleUnavailable(f'Vehicle is offline with error \'{response.reason.decode()}\'')
+        elif response.status_code >= 400:
             print('Got code', response.status_code, 'from', url)
             if try_again:
                 self.__reauthenticate()
@@ -135,7 +135,10 @@ class TeslaAuth:
             else:
                 raise MicroTeslaException('failed with body ' + response_text)  # TODO
         else:
-            return response.json()
+            try:
+                return json.loads(response_text)
+            except ValueError:
+                raise MicroTeslaException('failed with body ' + response_text)
 
 
 class MicroTesla:
@@ -144,7 +147,7 @@ class MicroTesla:
 
     def get_vehicle_list(self):
         return self.__auth.get(f'{BASE_URL}api/1/vehicles')['response']
-    
+
     def get_vehicle_summary(self, vehicle_id):
         return self.__auth.get(f'{BASE_URL}api/1/vehicles/{vehicle_id}')['response']
 
