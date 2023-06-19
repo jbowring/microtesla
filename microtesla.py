@@ -126,7 +126,7 @@ class TeslaAuth:
         response_text = response.text
 
         if response.status_code == 408:
-            raise VehicleUnavailable(str(response.headers) + ' ' + response_text)
+            raise VehicleUnavailable('Vehicle is offline with error {response.json()["error"]}')
         elif response.status_code >= 300:
             print('Got code', response.status_code, 'from', url)
             if try_again:
