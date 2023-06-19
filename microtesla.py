@@ -1,5 +1,5 @@
-import ubinascii
-import uhashlib
+import binascii
+import hashlib
 import json
 import os
 import sys
@@ -22,7 +22,7 @@ class VehicleUnavailable(MicroTeslaException):
 
 
 def urlsafe_b64encode(source):
-    return ubinascii.b2a_base64(source).rstrip().replace(b'+', b'-').replace(b'/', b'_')
+    return binascii.b2a_base64(source).rstrip().replace(b'+', b'-').replace(b'/', b'_')
 
 def generate_query_string(params):
     return '&'.join(f'{key}={value}' for key, value in params.items())
@@ -76,7 +76,7 @@ class TeslaAuth:
 
     def __get_refresh_token(self):
         code_verifier = urlsafe_b64encode(os.urandom(32)).rstrip(b'=')
-        unencoded_digest = uhashlib.sha256(code_verifier).digest()
+        unencoded_digest = hashlib.sha256(code_verifier).digest()
         code_challenge = urlsafe_b64encode(unencoded_digest).rstrip(b'=')
 
         auth_request_fields = {
@@ -123,16 +123,17 @@ class TeslaAuth:
 
     def get(self, url, try_again=True):
         response = urequests.get(url, headers={'Authorization': f'Bearer {self.__access_token}', 'Connection': 'close'})
+        response_text = response.text
 
         if response.status_code == 408:
-            raise VehicleUnavailable('Vehicle unavailable')
+            raise VehicleUnavailable(str(response.headers) + ' ' + response_text)
         elif response.status_code >= 300:
             print('Got code', response.status_code, 'from', url)
             if try_again:
                 self.__reauthenticate()
                 self.get(url, False)
             else:
-                raise MicroTeslaException('failed with body ' + response.text)  # TODO
+                raise MicroTeslaException('failed with body ' + response_text)  # TODO
         else:
             return response.json()
 
@@ -149,3 +150,6 @@ class MicroTesla:
 
     def get_vehicle_data(self, vehicle_id):
         return self.__auth.get(f'{BASE_URL}api/1/vehicles/{vehicle_id}/vehicle_data')['response']
+
+    def get_vehicle_charge_state(self, vehicle_id):
+        return self.__auth.get(f'{BASE_URL}api/1/vehicles/{vehicle_id}/vehicle_data')['response']['charge_state']
