@@ -33,7 +33,7 @@ def query_string(params):
 class Request:
     def __init__(self, url, method='GET', data: bytes = None, headers: dict = None, auth: tuple = None, timeout=None):
         self.status_code = None
-        self.status_text = ''
+        self.status_text = None
         self.headers = {}
         self.body = None
 
@@ -119,6 +119,10 @@ class Request:
         finally:
             s.close()
 
+    @property
+    def status_string(self):
+        return str(self.status_code) + (f' {self.status_text}' if self.status_text is not None else '')
+
 
 class MicroTesla:
     def __init__(self, cache_file='cache.json'):
@@ -131,42 +135,44 @@ class MicroTesla:
         except (OSError, KeyError):
             self.__refresh_token = None
 
-        self.__reauthenticate()
+        self.__get_access_token()
 
-    def __reauthenticate(self, try_again=True):
+    def __get_access_token(self, retry_on_fail=True):
         if self.__refresh_token is None:
             self.__get_refresh_token()
-        elif try_again:
-            post_params = {
-                'grant_type': 'refresh_token',
-                'client_id': SSO_CLIENT_ID,
-                'refresh_token': self.__refresh_token,
-                'scope': SCOPE,
-            }
 
-            headers = {
-                "Accept": "application/json",
-                "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
-            }
+        post_params = {
+            'grant_type': 'refresh_token',
+            'client_id': SSO_CLIENT_ID,
+            'refresh_token': self.__refresh_token,
+            'scope': SCOPE,
+        }
 
-            url = SSO_BASE_URL + TOKEN_URL
-            response = Request(url, method='POST', data=query_string(post_params).encode('utf8'), headers=headers)
-            if response.status_code != 200:
-                print('Got code', response.status_code, 'from', url)
-                if try_again:
-                    self.__refresh_token = None
-                    self.__reauthenticate(False)
-                    return
-                else:
-                    raise MicroTeslaException('failed')  # TODO
+        headers = {
+            "Accept": "application/json",
+            "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
+        }
 
-            response_json = json.loads(response.body)
-            if response_json['refresh_token'] != self.__refresh_token:
-                with open('cache.json', 'wb') as file:
-                    file.write(response.body)
+        url = SSO_BASE_URL + TOKEN_URL
+        post_data = query_string(post_params)
+        response = Request(url, method='POST', data=post_data.encode('utf8'), headers=headers)
+        if response.status_code != 200:
+            print(f'Got \'{response.status_string}\' from OAuth access token request')
+            if retry_on_fail:
+                self.__get_refresh_token()
+                return self.__get_access_token(False)
+            else:
+                print(f'Request data: {post_data}')
+                print(f'Response: {response.body}')
+                raise MicroTeslaException('Failed to get OAuth access token')
 
-            self.__refresh_token = response_json['refresh_token']
-            self.__access_token = response_json['access_token']
+        response_json = json.loads(response.body)
+        if response_json['refresh_token'] != self.__refresh_token:
+            with open('cache.json', 'wb') as file:
+                file.write(response.body)
+
+        self.__refresh_token = response_json['refresh_token']
+        self.__access_token = response_json['access_token']
 
     def __get_refresh_token(self):
         code_verifier = urlsafe_b64encode(os.urandom(32)).rstrip(b'=')
@@ -185,11 +191,12 @@ class MicroTesla:
         print('Open this URL:', SSO_BASE_URL + CODE_URL + '?' + query_string(auth_request_fields))
 
         code = None
+        code_key = 'code'
         try:
             for substring in input('Enter URL after authentication: ').split('?', 1)[1].split('&'):
                 try:
                     key, value = substring.split('=', 1)
-                    if key == 'code':
+                    if key == code_key:
                         code = value
                 except ValueError:
                     pass
@@ -197,7 +204,7 @@ class MicroTesla:
             pass
 
         if code is None:
-            raise ValueError("'code' parameter not in returned URL")
+            raise MicroTeslaException(f"'{code_key}' parameter not in returned URL")
 
         post_params = {
             'grant_type': 'authorization_code',
@@ -216,10 +223,9 @@ class MicroTesla:
         post_data = query_string(post_params)
         response = Request(url, method='POST', data=post_data.encode('utf8'), headers=headers)
         if response.status_code != 200:
-            print('Got code', response.status_code, 'from', url)
-            print(response.body)
-            print(post_data)
-            raise MicroTeslaException('failed')  # TODO
+            print(f'Got \'{response.status_string}\' from OAuth refresh token request with POST params {post_data}')
+            print(f'Response: {response.body}')
+            raise MicroTeslaException('Failed to get OAuth refresh token')
 
         response_json = json.loads(response.body)
         if response_json['refresh_token'] != self.__refresh_token:
@@ -229,24 +235,24 @@ class MicroTesla:
         self.__refresh_token = response_json['refresh_token']
         self.__access_token = response_json['access_token']
 
-    def get(self, url, try_again=True):
+    def get(self, url, retry_on_fail=True):
         response = Request(url, headers={'Authorization': f'Bearer {self.__access_token}', 'Connection': 'close'})
         response_text = response.body.decode()
 
         if response.status_code == 408:
-            raise VehicleUnavailable(f'Vehicle is offline with error \'{response.status_code} {response.status_text}\'')
+            raise VehicleUnavailable(f'Vehicle is offline with error \'{response.status_string}\'')
         elif response.status_code >= 400:
-            print('Got code', response.status_code, 'from', url)
-            if try_again:
-                self.__reauthenticate()
-                self.get(url, False)
+            print(f'Got \'{response.status_string}\' from GET request {url}')
+            if retry_on_fail:
+                self.__get_access_token()
+                return self.get(url, False)
             else:
-                raise MicroTeslaException('failed with body ' + response_text)  # TODO
+                raise MicroTeslaException(f'GET request failed with body {response_text}')
         else:
             try:
                 return json.loads(response_text)
             except ValueError:
-                raise MicroTeslaException('failed with body ' + response_text)
+                raise MicroTeslaException(f'GET request JSON parse failed with body {response_text}')
 
     def get_vehicle_list(self):
         return self.get(f'{BASE_URL}api/1/vehicles')['response']
