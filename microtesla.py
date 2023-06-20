@@ -120,8 +120,8 @@ class Request:
             s.close()
 
 
-class TeslaAuth:
-    def __init__(self, cache_file):
+class MicroTesla:
+    def __init__(self, cache_file='cache.json'):
         self.__cache_file = cache_file
         self.__access_token = None
 
@@ -248,19 +248,14 @@ class TeslaAuth:
             except ValueError:
                 raise MicroTeslaException('failed with body ' + response_text)
 
-
-class MicroTesla:
-    def __init__(self, cache_file='cache.json'):
-        self.__auth = TeslaAuth(cache_file)
-
     def get_vehicle_list(self):
-        return self.__auth.get(f'{BASE_URL}api/1/vehicles')['response']
+        return self.get(f'{BASE_URL}api/1/vehicles')['response']
 
     def get_vehicle_summary(self, vehicle_id):
-        return self.__auth.get(f'{BASE_URL}api/1/vehicles/{vehicle_id}')['response']
+        return self.get(f'{BASE_URL}api/1/vehicles/{vehicle_id}')['response']
 
     def get_vehicle_data(self, vehicle_id):
-        return self.__auth.get(f'{BASE_URL}api/1/vehicles/{vehicle_id}/vehicle_data')['response']
+        return self.get(f'{BASE_URL}api/1/vehicles/{vehicle_id}/vehicle_data')['response']
 
     def get_vehicle_charge_state(self, vehicle_id):
-        return self.__auth.get(f'{BASE_URL}api/1/vehicles/{vehicle_id}/vehicle_data')['response']['charge_state']
+        return self.get(f'{BASE_URL}api/1/vehicles/{vehicle_id}/vehicle_data')['response']['charge_state']
