@@ -2,9 +2,8 @@ import binascii
 import hashlib
 import json
 import os
-import sys
-
-import urequests
+import socket
+import ussl
 
 BASE_URL = 'https://owner-api.teslamotors.com/'
 SSO_BASE_URL = 'https://auth.tesla.com/'
@@ -14,8 +13,10 @@ TOKEN_URL = 'oauth2/v3/token'
 CODE_URL = 'oauth2/v3/authorize'
 SCOPE = 'openid+email+offline_access'
 
+
 class MicroTeslaException(Exception):
     pass
+
 
 class VehicleUnavailable(MicroTeslaException):
     pass
@@ -24,8 +25,100 @@ class VehicleUnavailable(MicroTeslaException):
 def urlsafe_b64encode(source):
     return binascii.b2a_base64(source).rstrip().replace(b'+', b'-').replace(b'/', b'_')
 
-def generate_query_string(params):
+
+def query_string(params):
     return '&'.join(f'{key}={value}' for key, value in params.items())
+
+
+class Request:
+    def __init__(self, url, method='GET', data: bytes = None, headers: dict = None, auth: tuple = None, timeout=None):
+        self.status_code = None
+        self.status_text = ''
+        self.headers = {}
+        self.body = None
+
+        try:
+            protocol, _, host, path = url.split('/', 3)
+        except ValueError:
+            protocol, _, host = url.split('/', 2)
+            path = ''
+
+        if protocol not in ('http:', 'https:'):
+            raise ValueError(f'Unsupported protocol: {protocol}')
+
+        secure = protocol == 'https:'
+
+        if ':' in host:
+            host, port = host.split(":", 1)
+            port = int(port)
+        else:
+            port = 443 if secure else 80
+
+        (ai_family, _, ai_proto, _, ai_sock_addr) = socket.getaddrinfo(host, port, 0, socket.SOCK_STREAM)[0]
+        s = socket.socket(ai_family, socket.SOCK_STREAM, ai_proto)
+
+        if timeout is not None:
+            s.settimeout(timeout)
+
+        try:
+            s.connect(ai_sock_addr)
+            if secure:
+                s = ussl.wrap_socket(s, server_hostname=host)
+
+            s.write(f'{method} /{path} HTTP/1.1\r\n'.encode('ascii'))
+
+            if 'Host' not in headers:
+                s.write(f'Host: {host}\r\n'.encode('ascii'))
+
+            if auth is not None:
+                s.write('Authorization: Basic '.encode('ascii'))
+                s.write(binascii.b2a_base64(f'{auth[0]}:{auth[1]}'.encode('ascii'))[:-1])
+                s.write('\r\n'.encode('ascii'))
+
+            if headers is not None:
+                for header, value in headers.items():
+                    s.write(f'{header}: {value}\r\n'.encode('ascii'))
+
+            if data is not None:
+                s.write(f'Content-Length: {len(data)}\r\n'.encode('ascii'))
+
+            s.write('Connection: close\r\n\r\n'.encode('ascii'))
+
+            if data is not None:
+                s.write(data)
+
+            line = s.readline().decode('ascii').rstrip()
+
+            try:
+                _, self.status_code, self.status_text = line.split(' ', 2)
+            except ValueError:
+                _, self.status_code = line.split(' ', 2)
+
+            self.status_code = int(self.status_code)
+
+            content_length = 0
+            while True:
+                line = s.readline().decode('ascii').rstrip()
+
+                if line == '':
+                    break
+
+                header, value = line.split(':', 1)
+
+                if header.lower() == 'content-length':
+                    content_length = int(value)
+
+                self.headers[header] = value
+
+            if content_length > 0:
+                self.body = bytearray(content_length)
+                data_view = memoryview(self.body)
+                count = 0
+                while count < content_length:
+                    count += s.readinto(data_view[count:], content_length - count)
+        finally:
+            s.close()
+
 
 class TeslaAuth:
     def __init__(self, cache_file):
@@ -56,9 +149,10 @@ class TeslaAuth:
                 "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
             }
 
-            response = urequests.post(SSO_BASE_URL + TOKEN_URL, data=generate_query_string(post_params), headers=headers)
+            url = SSO_BASE_URL + TOKEN_URL
+            response = Request(url, method='POST', data=query_string(post_params).encode('utf8'), headers=headers)
             if response.status_code != 200:
-                print('Got code', response.status_code, 'from', response.request.url)
+                print('Got code', response.status_code, 'from', url)
                 if try_again:
                     self.__refresh_token = None
                     self.__reauthenticate(False)
@@ -66,10 +160,10 @@ class TeslaAuth:
                 else:
                     raise MicroTeslaException('failed')  # TODO
 
-            response_json = response.json()
+            response_json = json.loads(response.body)
             if response_json['refresh_token'] != self.__refresh_token:
-                with open('cache.json', 'w') as file:
-                    json.dump(response_json, file)
+                with open('cache.json', 'wb') as file:
+                    file.write(response.body)
 
             self.__refresh_token = response_json['refresh_token']
             self.__access_token = response_json['access_token']
@@ -88,10 +182,22 @@ class TeslaAuth:
             'code_challenge_method': 'S256',
         }
 
-        print('Open this URL:', SSO_BASE_URL + CODE_URL + '?' + generate_query_string(auth_request_fields))
+        print('Open this URL:', SSO_BASE_URL + CODE_URL + '?' + query_string(auth_request_fields))
 
-        query_string = input('Enter URL after authentication: ').split('?', 1)[1]
-        code = dict(substring.split('=') for substring in query_string.split('&'))['code']
+        code = None
+        try:
+            for substring in input('Enter URL after authentication: ').split('?', 1)[1].split('&'):
+                try:
+                    key, value = substring.split('=', 1)
+                    if key == 'code':
+                        code = value
+                except ValueError:
+                    pass
+        except (IndexError, ValueError):
+            pass
+
+        if code is None:
+            raise ValueError("'code' parameter not in returned URL")
 
         post_params = {
             'grant_type': 'authorization_code',
@@ -106,27 +212,29 @@ class TeslaAuth:
             "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
         }
 
-        response = urequests.post(SSO_BASE_URL + TOKEN_URL, data=generate_query_string(post_params), headers=headers)
+        url = SSO_BASE_URL + TOKEN_URL
+        post_data = query_string(post_params)
+        response = Request(url, method='POST', data=post_data.encode('utf8'), headers=headers)
         if response.status_code != 200:
-            print('Got code', response.status_code, 'from', SSO_BASE_URL + TOKEN_URL)
-            print(response.text)
+            print('Got code', response.status_code, 'from', url)
+            print(response.body)
             print(post_data)
             raise MicroTeslaException('failed')  # TODO
 
-        response_json = response.json()
+        response_json = json.loads(response.body)
         if response_json['refresh_token'] != self.__refresh_token:
-            with open('cache.json', 'w') as file:
-                json.dump(response_json, file)
+            with open('cache.json', 'wb') as file:
+                file.write(response.body)
 
         self.__refresh_token = response_json['refresh_token']
         self.__access_token = response_json['access_token']
 
     def get(self, url, try_again=True):
-        response = urequests.get(url, headers={'Authorization': f'Bearer {self.__access_token}', 'Connection': 'close'})
-        response_text = response.text
+        response = Request(url, headers={'Authorization': f'Bearer {self.__access_token}', 'Connection': 'close'})
+        response_text = response.body.decode()
 
         if response.status_code == 408:
-            raise VehicleUnavailable(f'Vehicle is offline with error \'{response.reason.decode()}\'')
+            raise VehicleUnavailable(f'Vehicle is offline with error \'{response.status_code} {response.status_text}\'')
         elif response.status_code >= 400:
             print('Got code', response.status_code, 'from', url)
             if try_again:
