@@ -236,7 +236,7 @@ class MicroTesla:
         self.__access_token = response_json['access_token']
 
     def get(self, url, retry_on_fail=True):
-        response = Request(url, headers={'Authorization': f'Bearer {self.__access_token}', 'Connection': 'close'})
+        response = Request(url, headers={'Authorization': f'Bearer {self.__access_token}'})
         response_text = response.body.decode()
 
         if response.status_code == 408:
